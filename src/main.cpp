@@ -2,13 +2,12 @@
 #include <Geode/modify/MenuLayer.hpp>
 #include <Geode/modify/PlayLayer.hpp>
 #include <cocos-ext.h> 
-#include <random> // Add this at the top with the other includes
+#include <random>
 
 using namespace geode::prelude;
 using namespace cocos2d::extension;
 
-// --- PUT YOUR REPLIT URL HERE ---
-const std::string SERVER_URL = "https://713df0ba-0570-43f8-b018-fb75bbd4baa7-00-1v5ww1splvikp.pike.replit.dev:8080"; 
+const std::string SERVER_URL = "https://YOUR-REPLIT-URL-HERE"; 
 
 class DuelManager {
 public:
@@ -23,40 +22,30 @@ public:
     }
 
     void fetchUsername() {
-        // Only generate this ONCE per session so we don't lose our ID
         if (!m_username.empty()) return;
-
         auto am = GJAccountManager::sharedState();
         std::string baseName = am->m_username;
-        
-        if (baseName.empty()) {
-            baseName = "Player";
-        }
-
-        // Generate a random 4-digit number to make this device unique
+        if (baseName.empty()) baseName = "Player";
         std::random_device rd;
         std::mt19937 gen(rd());
         std::uniform_int_distribution<> distr(1000, 9999);
-        
         m_username = baseName + "_" + std::to_string(distr(gen));
-        
-        log::info("Assigned unique Session ID: {}", m_username);
     }
 };
 
 // --- THE MATCHMAKING & VERSUS LAYER ---
 class DuelMatchLayer : public cocos2d::CCLayer {
 protected:
-    CCLabelBMFont* m_statusLabel;
-    CCLabelBMFont* m_vsLabel;
+    CCLabelBMFont* m_titleLabel;
+    CCLabelBMFont* m_spectatorLabel;
+    CCLabelBMFont* m_resultsLabel;
     CCMenuItemSpriteExtra* m_readyBtn;
     CCMenu* m_menu;
 
 public:
     static cocos2d::CCScene* scene() {
         auto scene = cocos2d::CCScene::create();
-        auto layer = DuelMatchLayer::create();
-        scene->addChild(layer);
+        scene->addChild(DuelMatchLayer::create());
         return scene;
     }
 
@@ -64,80 +53,78 @@ public:
 
     bool init() {
         if (!CCLayer::init()) return false;
-        
         auto winSize = CCDirector::sharedDirector()->getWinSize();
         
-        // Background
         auto bg = CCSprite::create("GJ_gradientBG.png");
         bg->setPosition(winSize / 2);
         bg->setScaleX(winSize.width / bg->getContentSize().width);
         bg->setScaleY(winSize.height / bg->getContentSize().height);
-        bg->setColor({30, 30, 60}); // Dark blue theme
+        bg->setColor({20, 20, 40}); 
         this->addChild(bg);
+
+        // CLEAN UI LAYOUT
+        m_titleLabel = CCLabelBMFont::create("Connecting...", "goldFont.fnt");
+        m_titleLabel->setPosition({winSize.width / 2, winSize.height - 40});
+        this->addChild(m_titleLabel);
+
+        m_spectatorLabel = CCLabelBMFont::create("", "bigFont.fnt");
+        m_spectatorLabel->setPosition({winSize.width / 2, winSize.height / 2});
+        m_spectatorLabel->setScale(0.8f);
+        m_spectatorLabel->setColor({100, 255, 100}); // Green for spectate progress
+        this->addChild(m_spectatorLabel);
+
+        m_resultsLabel = CCLabelBMFont::create("", "chatFont.fnt");
+        m_resultsLabel->setPosition({winSize.width / 2, winSize.height / 2});
+        m_resultsLabel->setScale(1.5f);
+        this->addChild(m_resultsLabel);
 
         m_menu = CCMenu::create();
         m_menu->setPosition({0, 0});
         this->addChild(m_menu);
 
-        m_statusLabel = CCLabelBMFont::create("Connecting...", "goldFont.fnt");
-        m_statusLabel->setPosition({winSize.width / 2, winSize.height - 50});
-        this->addChild(m_statusLabel);
-
-        m_vsLabel = CCLabelBMFont::create("", "bigFont.fnt");
-        m_vsLabel->setPosition({winSize.width / 2, winSize.height / 2});
-        m_vsLabel->setScale(0.7f);
-        this->addChild(m_vsLabel);
-
-        // Cancel / Exit Button
         auto exitBtn = CCMenuItemSpriteExtra::create(
-            ButtonSprite::create("Exit / Cancel"), this, menu_selector(DuelMatchLayer::onExitClick)
+            ButtonSprite::create("Leave Match"), this, menu_selector(DuelMatchLayer::onExitClick)
         );
         exitBtn->setPosition({winSize.width / 2, 40});
         m_menu->addChild(exitBtn);
 
-        // Ready Button (Hidden initially)
         m_readyBtn = CCMenuItemSpriteExtra::create(
-            ButtonSprite::create("Next Round"), this, menu_selector(DuelMatchLayer::onReadyClick)
+            ButtonSprite::create("Ready for Next Round"), this, menu_selector(DuelMatchLayer::onReadyClick)
         );
-        m_readyBtn->setPosition({winSize.width / 2, 100});
+        m_readyBtn->setPosition({winSize.width / 2, 90});
         m_readyBtn->setVisible(false);
         m_menu->addChild(m_readyBtn);
 
         DuelManager::get()->fetchUsername();
 
         if (DuelManager::get()->m_inDuel) {
-            // We are returning from a death
-            m_statusLabel->setString("Waiting for Opponent...");
-            this->schedule(schedule_selector(DuelMatchLayer::pollServer), 1.0f);
+            m_titleLabel->setString("Waiting for Server...");
+            this->schedule(schedule_selector(DuelMatchLayer::pollServer), 0.5f);
         } else {
-            // We are joining the queue
             joinQueue();
         }
-
         return true;
     }
 
     void joinQueue() {
-        m_statusLabel->setString("Joining Queue...");
+        m_titleLabel->setString("Joining Queue...");
         auto req = new CCHttpRequest();
         req->setUrl((SERVER_URL + "/queue").c_str());
         req->setRequestType(CCHttpRequest::HttpRequestType::kHttpPost);
         std::string body = "{\"username\":\"" + DuelManager::get()->m_username + "\"}";
         req->setRequestData(body.c_str(), body.length());
-        
         req->setResponseCallback(this, httpresponse_selector(DuelMatchLayer::onQueueJoined));
-        req->setHeaders({"Content-Type: application/json"});
         CCHttpClient::getInstance()->send(req);
         req->release();
     }
 
     void onQueueJoined(CCHttpClient*, CCHttpResponse* res) {
         if (!res || !res->isSucceed()) {
-            m_statusLabel->setString("Server Offline!");
+            m_titleLabel->setString("Server Offline!");
             return;
         }
-        m_statusLabel->setString("Searching for opponent...");
-        this->schedule(schedule_selector(DuelMatchLayer::pollServer), 1.5f);
+        m_titleLabel->setString("Searching for opponent...");
+        this->schedule(schedule_selector(DuelMatchLayer::pollServer), 0.5f); // Fast polling for snappy turns
     }
 
     void pollServer(float dt) {
@@ -161,29 +148,34 @@ public:
             auto data = json["matchData"];
             DuelManager::get()->m_matchId = json["matchId"].asString().unwrapOr("");
             std::string status = data["status"].asString().unwrapOr("");
+            std::string activePlayer = data["activePlayer"].asString().unwrapOr("");
+            int livePercent = data["livePercent"].asInt().unwrapOr(0);
 
-            std::string p1 = data["players"][0].asString().unwrapOr("P1");
-            std::string p2 = data["players"][1].asString().unwrapOr("P2");
+            std::string myName = DuelManager::get()->m_username;
+            std::string oppName = (data["players"][0].asString().unwrapOr("") == myName) ? 
+                                   data["players"][1].asString().unwrapOr("") : 
+                                   data["players"][0].asString().unwrapOr("");
             auto state = data["state"];
 
-            // Identify who is who
-            std::string myName = DuelManager::get()->m_username;
-            std::string oppName = (p1 == myName) ? p2 : p1;
-
             if (status == "playing") {
-                if (!DuelManager::get()->m_inDuel) {
-                    // Start the match for the first time
-                    this->unscheduleAllSelectors();
-                    startMatch();
-                } else if (DuelManager::get()->m_isDead) {
-                    // THE FIX: We are dead, but opponent is still playing. Just wait.
-                    int myPct = state[myName]["percent"].asInt().unwrapOr(0);
-                    m_statusLabel->setString(fmt::format("You died at {}%\nWaiting for {} to finish...", myPct, oppName).c_str());
-                    m_vsLabel->setString(""); 
+                m_resultsLabel->setString(""); // Clear results text
+
+                if (activePlayer == myName) {
+                    if (!DuelManager::get()->m_inDuel || DuelManager::get()->m_isDead) {
+                        this->unscheduleAllSelectors();
+                        startMatch(); // IT IS OUR TURN!
+                    }
+                } else {
+                    // SPECTATING MODE!
+                    m_titleLabel->setString("SPECTATING");
+                    m_spectatorLabel->setString(fmt::format("{} is playing...\nLive Progress: {}%", oppName, livePercent).c_str());
                 }
             } 
             else if (status == "calculating" || status == "game_over") {
-                // Both players are dead, show the clear UI
+                // RESULTS SCREEN
+                m_spectatorLabel->setString(""); // Clear spectate text
+                m_titleLabel->setString(status == "game_over" ? "MATCH OVER!" : "ROUND OVER!");
+                
                 int myHp = state[myName]["hp"].asInt().unwrapOr(100);
                 int oppHp = state[oppName]["hp"].asInt().unwrapOr(100);
                 int myPct = state[myName]["percent"].asInt().unwrapOr(0);
@@ -191,34 +183,24 @@ public:
                 int myDmg = state[myName]["lastDamage"].asInt().unwrapOr(0);
                 int oppDmg = state[oppName]["lastDamage"].asInt().unwrapOr(0);
 
-                // Only show damage text if damage was actually taken
-                std::string myDmgStr = myDmg > 0 ? fmt::format(" (-{})", myDmg) : "";
-                std::string oppDmgStr = oppDmg > 0 ? fmt::format(" (-{})", oppDmg) : "";
-
-                m_statusLabel->setString(status == "game_over" ? "MATCH OVER!" : "ROUND OVER!");
-                
-                // Clear, spaced out formatting
-                std::string vsText = fmt::format(
-                    "{} (You)\n{}%  |  {} HP{}\n\nVS\n\n{}\n{}%  |  {} HP{}",
-                    myName, myPct, myHp, myDmgStr,
-                    oppName, oppPct, oppHp, oppDmgStr
+                std::string text = fmt::format(
+                    "You ({}): {}% ({} HP)\nDamage Taken: {}\n\n-----------------\n\nOpponent ({}): {}% ({} HP)\nDamage Taken: {}",
+                    myName, myPct, myHp, myDmg,
+                    oppName, oppPct, oppHp, oppDmg
                 );
                 
-                m_vsLabel->setString(vsText.c_str());
-                
+                m_resultsLabel->setString(text.c_str());
                 if (status == "calculating") m_readyBtn->setVisible(true);
             }
         } else {
             int count = json["queueCount"].asInt().unwrapOr(1);
-            m_statusLabel->setString(fmt::format("Searching... Players in Queue: {}/2", count).c_str());
+            m_titleLabel->setString(fmt::format("Searching... Players in Queue: {}/2", count).c_str());
         }
     }
 
     void startMatch() {
         DuelManager::get()->m_inDuel = true;
         DuelManager::get()->m_isDead = false;
-        
-        // Load Stereo Madness (Level 22)
         auto GLM = GameLevelManager::sharedState();
         auto level = GLM->getMainLevel(22, false);
         if (level) {
@@ -229,38 +211,105 @@ public:
 
     void onReadyClick(CCObject*) {
         m_readyBtn->setVisible(false);
-        m_statusLabel->setString("Waiting for opponent to ready up...");
-        
+        m_resultsLabel->setString("Waiting for opponent...");
         auto req = new CCHttpRequest();
         req->setUrl((SERVER_URL + "/ready").c_str());
         req->setRequestType(CCHttpRequest::HttpRequestType::kHttpPost);
         std::string body = "{\"matchId\":\"" + DuelManager::get()->m_matchId + "\", \"username\":\"" + DuelManager::get()->m_username + "\"}";
         req->setRequestData(body.c_str(), body.length());
-        req->setHeaders({"Content-Type: application/json"});
         CCHttpClient::getInstance()->send(req);
         req->release();
     }
 
     void onExitClick(CCObject*) {
+        // Exit logic remains identical
         this->unscheduleAllSelectors();
         DuelManager::get()->m_inDuel = false;
-        
-        // Leave Queue
         auto req = new CCHttpRequest();
         req->setUrl((SERVER_URL + "/leave").c_str());
         req->setRequestType(CCHttpRequest::HttpRequestType::kHttpPost);
         std::string body = "{\"username\":\"" + DuelManager::get()->m_username + "\"}";
         req->setRequestData(body.c_str(), body.length());
-        req->setHeaders({"Content-Type: application/json"});
         CCHttpClient::getInstance()->send(req);
         req->release();
-
-        auto menuScene = MenuLayer::scene(false);
-        CCDirector::sharedDirector()->replaceScene(CCTransitionFade::create(0.5f, menuScene));
+        CCDirector::sharedDirector()->replaceScene(CCTransitionFade::create(0.5f, MenuLayer::scene(false)));
     }
 };
 
-// --- MENU LAYER HOOK (ENTRY POINT) ---
+// --- PLAY LAYER HOOK ---
+class $modify(MyPlayLayer, PlayLayer) {
+    
+    bool init(GJGameLevel* level, bool useReplay, bool dontCreateObjects) {
+        if (!PlayLayer::init(level, useReplay, dontCreateObjects)) return false;
+        
+        // If in a duel, schedule a live percentage sync every 0.5 seconds
+        if (DuelManager::get()->m_inDuel) {
+            this->schedule(schedule_selector(MyPlayLayer::syncLiveProgress), 0.5f);
+        }
+        return true;
+    }
+
+    void syncLiveProgress(float dt) {
+        if (!DuelManager::get()->m_inDuel || DuelManager::get()->m_isDead) return;
+        
+        auto req = new CCHttpRequest();
+        req->setUrl((SERVER_URL + "/sync").c_str());
+        req->setRequestType(CCHttpRequest::HttpRequestType::kHttpPost);
+        std::string body = "{\"matchId\":\"" + DuelManager::get()->m_matchId + "\", \"username\":\"" + DuelManager::get()->m_username + "\", \"percent\":" + std::to_string(this->getCurrentPercentInt()) + "}";
+        req->setRequestData(body.c_str(), body.length());
+        CCHttpClient::getInstance()->send(req);
+        req->release();
+    }
+
+    void destroyPlayer(PlayerObject* p, GameObject* g) {
+        PlayLayer::destroyPlayer(p, g);
+
+        if (DuelManager::get()->m_inDuel && !DuelManager::get()->m_isDead) {
+            int percent = this->getCurrentPercentInt();
+            
+            // THE 0% BUG FIX: Ignore deaths at 0%. Let them respawn naturally.
+            if (percent == 0) return; 
+
+            DuelManager::get()->m_isDead = true;
+            this->unschedule(schedule_selector(MyPlayLayer::syncLiveProgress)); // Stop syncing
+            
+            auto req = new CCHttpRequest();
+            req->setUrl((SERVER_URL + "/die").c_str());
+            req->setRequestType(CCHttpRequest::HttpRequestType::kHttpPost);
+            std::string body = "{\"matchId\":\"" + DuelManager::get()->m_matchId + "\", \"username\":\"" + DuelManager::get()->m_username + "\", \"percent\":" + std::to_string(percent) + "}";
+            req->setRequestData(body.c_str(), body.length());
+            CCHttpClient::getInstance()->send(req);
+            req->release();
+
+            this->scheduleOnce(schedule_selector(MyPlayLayer::kickToVersus), 1.5f);
+        }
+    }
+
+    void pauseGame(bool p0) {
+        if (DuelManager::get()->m_inDuel) return; // Anti-cheese
+        PlayLayer::pauseGame(p0);
+    }
+
+    void kickToVersus(float dt) {
+        CCDirector::sharedDirector()->replaceScene(CCTransitionFade::create(0.5f, DuelMatchLayer::scene()));
+    }
+    
+    void levelComplete() {
+        PlayLayer::levelComplete();
+        if (DuelManager::get()->m_inDuel && !DuelManager::get()->m_isDead) {
+            DuelManager::get()->m_isDead = true;
+            auto req = new CCHttpRequest();
+            req->setUrl((SERVER_URL + "/die").c_str());
+            req->setRequestType(CCHttpRequest::HttpRequestType::kHttpPost);
+            std::string body = "{\"matchId\":\"" + DuelManager::get()->m_matchId + "\", \"username\":\"" + DuelManager::get()->m_username + "\", \"percent\": 100 }";
+            req->setRequestData(body.c_str(), body.length());
+            CCHttpClient::getInstance()->send(req);
+            req->release();
+            this->scheduleOnce(schedule_selector(MyPlayLayer::kickToVersus), 2.0f);
+        }
+    }
+};
+
 class $modify(MyMenuLayer, MenuLayer) {
     bool init() {
         if (!MenuLayer::init()) return false;
@@ -272,66 +321,7 @@ class $modify(MyMenuLayer, MenuLayer) {
         menu->updateLayout();
         return true;
     }
-
     void onStartDuel(CCObject*) {
         CCDirector::sharedDirector()->replaceScene(CCTransitionFade::create(0.5f, DuelMatchLayer::scene()));
-    }
-};
-
-// --- PLAY LAYER HOOK (ANTI-CHEESE & DEATH) ---
-class $modify(MyPlayLayer, PlayLayer) {
-    
-    // ANTI CHEESE: Disable pausing during a duel
-    void pauseGame(bool p0) {
-        if (DuelManager::get()->m_inDuel) {
-            // Do nothing! They cannot pause.
-            return; 
-        }
-        PlayLayer::pauseGame(p0);
-    }
-
-    void destroyPlayer(PlayerObject* p, GameObject* g) {
-        PlayLayer::destroyPlayer(p, g);
-
-        if (DuelManager::get()->m_inDuel && !DuelManager::get()->m_isDead) {
-            DuelManager::get()->m_isDead = true;
-            int percent = this->getCurrentPercentInt();
-            
-            // Send Death to Server
-            auto req = new CCHttpRequest();
-            req->setUrl((SERVER_URL + "/die").c_str());
-            req->setRequestType(CCHttpRequest::HttpRequestType::kHttpPost);
-            std::string body = "{\"matchId\":\"" + DuelManager::get()->m_matchId + "\", \"username\":\"" + DuelManager::get()->m_username + "\", \"percent\":" + std::to_string(percent) + "}";
-            req->setRequestData(body.c_str(), body.length());
-            req->setHeaders({"Content-Type: application/json"});
-            CCHttpClient::getInstance()->send(req);
-            req->release();
-
-            // Kick back to Versus layer after 1.5 seconds (lets the death animation play)
-            this->scheduleOnce(schedule_selector(MyPlayLayer::kickToVersus), 1.5f);
-        }
-    }
-
-    void kickToVersus(float dt) {
-        CCDirector::sharedDirector()->replaceScene(CCTransitionFade::create(0.5f, DuelMatchLayer::scene()));
-    }
-    
-    // If they beat the level
-    void levelComplete() {
-        PlayLayer::levelComplete();
-        if (DuelManager::get()->m_inDuel && !DuelManager::get()->m_isDead) {
-            DuelManager::get()->m_isDead = true;
-            
-            auto req = new CCHttpRequest();
-            req->setUrl((SERVER_URL + "/die").c_str());
-            req->setRequestType(CCHttpRequest::HttpRequestType::kHttpPost);
-            std::string body = "{\"matchId\":\"" + DuelManager::get()->m_matchId + "\", \"username\":\"" + DuelManager::get()->m_username + "\", \"percent\": 100 }";
-            req->setRequestData(body.c_str(), body.length());
-            req->setHeaders({"Content-Type: application/json"});
-            CCHttpClient::getInstance()->send(req);
-            req->release();
-
-            this->scheduleOnce(schedule_selector(MyPlayLayer::kickToVersus), 2.0f);
-        }
     }
 };
