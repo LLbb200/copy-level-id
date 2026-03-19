@@ -162,23 +162,49 @@ public:
             DuelManager::get()->m_matchId = json["matchId"].asString().unwrapOr("");
             std::string status = data["status"].asString().unwrapOr("");
 
+            std::string p1 = data["players"][0].asString().unwrapOr("P1");
+            std::string p2 = data["players"][1].asString().unwrapOr("P2");
+            auto state = data["state"];
+
+            // Identify who is who
+            std::string myName = DuelManager::get()->m_username;
+            std::string oppName = (p1 == myName) ? p2 : p1;
+
             if (status == "playing") {
-                if (!DuelManager::get()->m_inDuel || DuelManager::get()->m_isDead) {
+                if (!DuelManager::get()->m_inDuel) {
+                    // Start the match for the first time
                     this->unscheduleAllSelectors();
                     startMatch();
+                } else if (DuelManager::get()->m_isDead) {
+                    // THE FIX: We are dead, but opponent is still playing. Just wait.
+                    int myPct = state[myName]["percent"].asInt().unwrapOr(0);
+                    m_statusLabel->setString(fmt::format("You died at {}%\nWaiting for {} to finish...", myPct, oppName).c_str());
+                    m_vsLabel->setString(""); 
                 }
             } 
             else if (status == "calculating" || status == "game_over") {
-                // Opponent died, show results!
-                auto state = data["state"];
-                std::string p1 = data["players"][0].asString().unwrapOr("P1");
-                std::string p2 = data["players"][1].asString().unwrapOr("P2");
+                // Both players are dead, show the clear UI
+                int myHp = state[myName]["hp"].asInt().unwrapOr(100);
+                int oppHp = state[oppName]["hp"].asInt().unwrapOr(100);
+                int myPct = state[myName]["percent"].asInt().unwrapOr(0);
+                int oppPct = state[oppName]["percent"].asInt().unwrapOr(0);
+                int myDmg = state[myName]["lastDamage"].asInt().unwrapOr(0);
+                int oppDmg = state[oppName]["lastDamage"].asInt().unwrapOr(0);
+
+                // Only show damage text if damage was actually taken
+                std::string myDmgStr = myDmg > 0 ? fmt::format(" (-{})", myDmg) : "";
+                std::string oppDmgStr = oppDmg > 0 ? fmt::format(" (-{})", oppDmg) : "";
+
+                m_statusLabel->setString(status == "game_over" ? "MATCH OVER!" : "ROUND OVER!");
                 
-                int hp1 = state[p1]["hp"].asInt().unwrapOr(100);
-                int hp2 = state[p2]["hp"].asInt().unwrapOr(100);
+                // Clear, spaced out formatting
+                std::string vsText = fmt::format(
+                    "{} (You)\n{}%  |  {} HP{}\n\nVS\n\n{}\n{}%  |  {} HP{}",
+                    myName, myPct, myHp, myDmgStr,
+                    oppName, oppPct, oppHp, oppDmgStr
+                );
                 
-                m_statusLabel->setString(status == "game_over" ? "MATCH OVER" : "ROUND OVER");
-                m_vsLabel->setString(fmt::format("{} ({} HP)\nVS\n{} ({} HP)", p1, hp1, p2, hp2).c_str());
+                m_vsLabel->setString(vsText.c_str());
                 
                 if (status == "calculating") m_readyBtn->setVisible(true);
             }
