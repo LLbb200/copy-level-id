@@ -175,8 +175,10 @@ public:
                 }
             } 
             else if (status == "calculating" || status == "game_over") {
-                // Ensure we only run the animation ONCE
-                if (m_resultsLabel->getString() == "") {
+                // THE FIX: Properly check if the C-string is empty
+                const char* currentText = m_resultsLabel->getString();
+                if (!currentText || strlen(currentText) == 0) {
+                    
                     m_resultsLabel->setString("animating"); // flag to prevent loop
                     m_spectatorLabel->setString("");
                     m_titleLabel->setString("");
