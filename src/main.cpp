@@ -38,7 +38,7 @@ public:
         std::mt19937 gen(rd());
         std::uniform_int_distribution<> distr(1000, 9999);
         
-        m_username = baseName + "#" + std::to_string(distr(gen));
+        m_username = baseName + "_" + std::to_string(distr(gen));
         
         log::info("Assigned unique Session ID: {}", m_username);
     }
