@@ -158,44 +158,147 @@ public:
             auto state = data["state"];
 
             if (status == "playing") {
-                m_resultsLabel->setString(""); // Clear results text
-
                 if (activePlayer == myName) {
                     if (!DuelManager::get()->m_inDuel || DuelManager::get()->m_isDead) {
                         this->unscheduleAllSelectors();
-                        startMatch(); // IT IS OUR TURN!
+                        startMatch();
                     }
                 } else {
-                    // SPECTATING MODE!
-                    m_titleLabel->setString("SPECTATING");
-                    m_spectatorLabel->setString(fmt::format("{} is playing...\nLive Progress: {}%", oppName, livePercent).c_str());
+                    // Cleaner Spectating Progress
+                    m_titleLabel->setString("SPECTATING OPPONENT...");
+                    std::string bar = "[";
+                    int barsToDraw = livePercent / 5; // 20 bars total
+                    for(int i = 0; i < 20; i++) bar += (i < barsToDraw) ? "|" : " ";
+                    bar += "]";
+                    
+                    m_spectatorLabel->setString(fmt::format("{}\n\n{}%", bar, livePercent).c_str());
                 }
             } 
             else if (status == "calculating" || status == "game_over") {
-                // RESULTS SCREEN
-                m_spectatorLabel->setString(""); // Clear spectate text
-                m_titleLabel->setString(status == "game_over" ? "MATCH OVER!" : "ROUND OVER!");
-                
-                int myHp = state[myName]["hp"].asInt().unwrapOr(100);
-                int oppHp = state[oppName]["hp"].asInt().unwrapOr(100);
-                int myPct = state[myName]["percent"].asInt().unwrapOr(0);
-                int oppPct = state[oppName]["percent"].asInt().unwrapOr(0);
-                int myDmg = state[myName]["lastDamage"].asInt().unwrapOr(0);
-                int oppDmg = state[oppName]["lastDamage"].asInt().unwrapOr(0);
+                // Ensure we only run the animation ONCE
+                if (m_resultsLabel->getString() == "") {
+                    m_resultsLabel->setString("animating"); // flag to prevent loop
+                    m_spectatorLabel->setString("");
+                    m_titleLabel->setString("");
+                    this->unscheduleAllSelectors(); // Stop polling during animation
+                    
+                    int myHp = state[myName]["hp"].asInt().unwrapOr(100);
+                    int oppHp = state[oppName]["hp"].asInt().unwrapOr(100);
+                    int myPct = state[myName]["percent"].asInt().unwrapOr(0);
+                    int oppPct = state[oppName]["percent"].asInt().unwrapOr(0);
+                    int myDmg = state[myName]["lastDamage"].asInt().unwrapOr(0);
+                    int oppDmg = state[oppName]["lastDamage"].asInt().unwrapOr(0);
 
-                std::string text = fmt::format(
-                    "You ({}): {}% ({} HP)\nDamage Taken: {}\n\n-----------------\n\nOpponent ({}): {}% ({} HP)\nDamage Taken: {}",
-                    myName, myPct, myHp, myDmg,
-                    oppName, oppPct, oppHp, oppDmg
-                );
-                
-                m_resultsLabel->setString(text.c_str());
-                if (status == "calculating") m_readyBtn->setVisible(true);
+                    animateResults(myPct, oppPct, myHp, oppHp, myDmg, oppDmg, status == "game_over");
+                }
             }
-        } else {
-            int count = json["queueCount"].asInt().unwrapOr(1);
-            m_titleLabel->setString(fmt::format("Searching... Players in Queue: {}/2", count).c_str());
         }
+    }
+
+    void animateResults(int myPct, int oppPct, int myHp, int oppHp, int myDmg, int oppDmg, bool isGameOver) {
+        auto winSize = CCDirector::sharedDirector()->getWinSize();
+
+        // 1. Create the Left (YOU) and Right (OPPONENT) nodes
+        auto myHeader = CCLabelBMFont::create("YOU", "goldFont.fnt");
+        auto myPctLabel = CCLabelBMFont::create(fmt::format("{}%", myPct).c_str(), "bigFont.fnt");
+        myHeader->setPosition({winSize.width * 0.25f, winSize.height * 0.6f});
+        myPctLabel->setPosition({winSize.width * 0.25f, winSize.height * 0.45f});
+        
+        auto oppHeader = CCLabelBMFont::create("OPPONENT", "goldFont.fnt");
+        auto oppPctLabel = CCLabelBMFont::create(fmt::format("{}%", oppPct).c_str(), "bigFont.fnt");
+        oppHeader->setPosition({winSize.width * 0.75f, winSize.height * 0.6f});
+        oppPctLabel->setPosition({winSize.width * 0.75f, winSize.height * 0.45f});
+
+        // Start invisible
+        myHeader->setOpacity(0); myPctLabel->setOpacity(0);
+        oppHeader->setOpacity(0); oppPctLabel->setOpacity(0);
+
+        this->addChild(myHeader); this->addChild(myPctLabel);
+        this->addChild(oppHeader); this->addChild(oppPctLabel);
+
+        // 2. The Fade Sequence (Creating fresh actions for every single node)
+        myHeader->runAction(CCSequence::create(CCFadeIn::create(0.5f), CCDelayTime::create(1.5f), CCFadeOut::create(0.5f), nullptr));
+        
+        myPctLabel->runAction(CCSequence::create(CCFadeIn::create(0.5f), CCDelayTime::create(1.5f), CCFadeOut::create(0.5f), nullptr));
+        
+        oppHeader->runAction(CCSequence::create(CCFadeIn::create(0.5f), CCDelayTime::create(1.5f), CCFadeOut::create(0.5f), nullptr));
+        
+        // Final action triggers the health bars
+        auto triggerBars = CCCallFunc::create(this, callfunc_selector(DuelMatchLayer::showHealthBars));
+        oppPctLabel->runAction(CCSequence::create(CCFadeIn::create(0.5f), CCDelayTime::create(1.5f), CCFadeOut::create(0.5f), triggerBars, nullptr));
+
+        // Store these so we can use them in the next function
+        // Note: Using malloc/free or a proper struct is safer long-term, but this array works for our current logic
+        int* data = new int[5]{myHp, oppHp, myDmg, oppDmg, isGameOver};
+        this->setUserData(data);
+    }
+
+    void showHealthBars() {
+        auto winSize = CCDirector::sharedDirector()->getWinSize();
+        int* data = static_cast<int*>(this->getUserData());
+        int myHp = data[0]; int oppHp = data[1]; 
+        int myDmg = data[2]; int oppDmg = data[3];
+        bool isGameOver = data[4];
+
+        m_titleLabel->setString(isGameOver ? "MATCH OVER!" : "ROUND RESULTS");
+
+        // YOU: Health Bar
+        auto myTitle = CCLabelBMFont::create("YOU", "goldFont.fnt");
+        myTitle->setPosition({winSize.width * 0.25f, winSize.height * 0.65f});
+        this->addChild(myTitle);
+
+        auto myBarBg = CCSprite::create("square02_001.png");
+        myBarBg->setColor({255, 0, 0}); // Red background
+        myBarBg->setOpacity(150);
+        myBarBg->setPosition({winSize.width * 0.25f, winSize.height * 0.5f});
+        myBarBg->setScaleX(2.0f); myBarBg->setScaleY(0.4f);
+        this->addChild(myBarBg);
+
+        auto myBarFg = CCSprite::create("square02_001.png");
+        myBarFg->setColor({0, 255, 0}); // Green health
+        myBarFg->setAnchorPoint({0.0f, 0.5f}); // Scale from the left
+        myBarFg->setPosition({winSize.width * 0.25f - (myBarBg->getScaledContentSize().width / 2), winSize.height * 0.5f});
+        myBarFg->setScaleY(0.4f);
+        
+        // Start at previous HP, then animate draining to new HP
+        float startMyHp = (myHp + myDmg) / 100.0f * 2.0f;
+        float endMyHp = (myHp) / 100.0f * 2.0f;
+        myBarFg->setScaleX(startMyHp);
+        this->addChild(myBarFg);
+        myBarFg->runAction(CCScaleTo::create(1.0f, endMyHp, 0.4f));
+
+        // OPPONENT: Health Bar
+        auto oppTitle = CCLabelBMFont::create("OPPONENT", "goldFont.fnt");
+        oppTitle->setPosition({winSize.width * 0.75f, winSize.height * 0.65f});
+        this->addChild(oppTitle);
+
+        auto oppBarBg = CCSprite::create("square02_001.png");
+        oppBarBg->setColor({255, 0, 0});
+        oppBarBg->setOpacity(150);
+        oppBarBg->setPosition({winSize.width * 0.75f, winSize.height * 0.5f});
+        oppBarBg->setScaleX(2.0f); oppBarBg->setScaleY(0.4f);
+        this->addChild(oppBarBg);
+
+        auto oppBarFg = CCSprite::create("square02_001.png");
+        oppBarFg->setColor({0, 255, 0});
+        oppBarFg->setAnchorPoint({0.0f, 0.5f});
+        oppBarFg->setPosition({winSize.width * 0.75f - (oppBarBg->getScaledContentSize().width / 2), winSize.height * 0.5f});
+        oppBarFg->setScaleY(0.4f);
+        
+        float startOppHp = (oppHp + oppDmg) / 100.0f * 2.0f;
+        float endOppHp = (oppHp) / 100.0f * 2.0f;
+        oppBarFg->setScaleX(startOppHp);
+        this->addChild(oppBarFg);
+        oppBarFg->runAction(CCScaleTo::create(1.0f, endOppHp, 0.4f));
+
+        // Show Ready button after animation finishes
+        this->scheduleOnce(schedule_selector(DuelMatchLayer::showReadyButton), 1.5f);
+    }
+
+    void showReadyButton(float dt) {
+        m_readyBtn->setVisible(true);
+        // Resume polling to check if the other player readied up
+        this->schedule(schedule_selector(DuelMatchLayer::pollServer), 1.0f);
     }
 
     void startMatch() {
