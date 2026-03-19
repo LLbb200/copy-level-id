@@ -2,6 +2,7 @@
 #include <Geode/modify/MenuLayer.hpp>
 #include <Geode/modify/PlayLayer.hpp>
 #include <cocos-ext.h> 
+#include <random> // Add this at the top with the other includes
 
 using namespace geode::prelude;
 using namespace cocos2d::extension;
@@ -22,9 +23,24 @@ public:
     }
 
     void fetchUsername() {
+        // Only generate this ONCE per session so we don't lose our ID
+        if (!m_username.empty()) return;
+
         auto am = GJAccountManager::sharedState();
-        m_username = am->m_username;
-        if (m_username.empty()) m_username = "Player" + std::to_string(rand() % 9999);
+        std::string baseName = am->m_username;
+        
+        if (baseName.empty()) {
+            baseName = "Player";
+        }
+
+        // Generate a random 4-digit number to make this device unique
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        std::uniform_int_distribution<> distr(1000, 9999);
+        
+        m_username = baseName + "#" + std::to_string(distr(gen));
+        
+        log::info("Assigned unique Session ID: {}", m_username);
     }
 };
 
