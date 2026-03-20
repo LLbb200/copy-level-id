@@ -5,7 +5,6 @@
 #include <random>
 
 using namespace geode::prelude;
-using namespace cocos2d::extension;
 
 const std::string SERVER_URL = "https://713df0ba-0570-43f8-b018-fb75bbd4baa7-00-1v5ww1splvikp.pike.replit.dev:8080"; 
 
@@ -15,6 +14,8 @@ public:
     std::string m_matchId = "";
     bool m_inDuel = false;
     bool m_isDead = false;
+    bool m_justDied = false; 
+    int m_lastPercent = 0;
 
     static DuelManager* get() {
         static DuelManager instance;
@@ -33,14 +34,19 @@ public:
     }
 };
 
-// --- THE MATCHMAKING & VERSUS LAYER ---
 class DuelMatchLayer : public cocos2d::CCLayer {
 protected:
     CCLabelBMFont* m_titleLabel;
     CCLabelBMFont* m_spectatorLabel;
-    CCLabelBMFont* m_resultsLabel;
     CCMenuItemSpriteExtra* m_readyBtn;
     CCMenu* m_menu;
+    bool m_isAnimating = false;
+
+    // Animation Data Storage
+    int m_myHp = 100, m_oppHp = 100;
+    int m_myDmg = 0, m_oppDmg = 0;
+    int m_myPct = 0, m_oppPct = 0;
+    bool m_isGameOver = false;
 
 public:
     static cocos2d::CCScene* scene() {
@@ -53,8 +59,10 @@ public:
 
     bool init() {
         if (!CCLayer::init()) return false;
-        auto winSize = CCDirector::sharedDirector()->getWinSize();
         
+        // GameSoundManager::sharedState()->stopBackgroundMusic(); // Fix chaotic audio
+        
+        auto winSize = CCDirector::sharedDirector()->getWinSize();
         auto bg = CCSprite::create("GJ_gradientBG.png");
         bg->setPosition(winSize / 2);
         bg->setScaleX(winSize.width / bg->getContentSize().width);
@@ -62,7 +70,6 @@ public:
         bg->setColor({20, 20, 40}); 
         this->addChild(bg);
 
-        // CLEAN UI LAYOUT
         m_titleLabel = CCLabelBMFont::create("Connecting...", "goldFont.fnt");
         m_titleLabel->setPosition({winSize.width / 2, winSize.height - 40});
         this->addChild(m_titleLabel);
@@ -70,32 +77,29 @@ public:
         m_spectatorLabel = CCLabelBMFont::create("", "bigFont.fnt");
         m_spectatorLabel->setPosition({winSize.width / 2, winSize.height / 2});
         m_spectatorLabel->setScale(0.8f);
-        m_spectatorLabel->setColor({100, 255, 100}); // Green for spectate progress
+        m_spectatorLabel->setColor({100, 255, 100});
         this->addChild(m_spectatorLabel);
-
-        m_resultsLabel = CCLabelBMFont::create("", "chatFont.fnt");
-        m_resultsLabel->setPosition({winSize.width / 2, winSize.height / 2});
-        m_resultsLabel->setScale(1.5f);
-        this->addChild(m_resultsLabel);
 
         m_menu = CCMenu::create();
         m_menu->setPosition({0, 0});
         this->addChild(m_menu);
 
-        auto exitBtn = CCMenuItemSpriteExtra::create(
-            ButtonSprite::create("Leave Match"), this, menu_selector(DuelMatchLayer::onExitClick)
-        );
-        exitBtn->setPosition({winSize.width / 2, 40});
+        auto exitBtn = CCMenuItemSpriteExtra::create(ButtonSprite::create("Leave Match"), this, menu_selector(DuelMatchLayer::onExitClick));
+        exitBtn->setPosition({winSize.width / 2, 30});
         m_menu->addChild(exitBtn);
 
-        m_readyBtn = CCMenuItemSpriteExtra::create(
-            ButtonSprite::create("Ready for Next Round"), this, menu_selector(DuelMatchLayer::onReadyClick)
-        );
-        m_readyBtn->setPosition({winSize.width / 2, 90});
+        m_readyBtn = CCMenuItemSpriteExtra::create(ButtonSprite::create("Ready for Next Round"), this, menu_selector(DuelMatchLayer::onReadyClick));
+        m_readyBtn->setPosition({winSize.width / 2, 80});
         m_readyBtn->setVisible(false);
         m_menu->addChild(m_readyBtn);
 
         DuelManager::get()->fetchUsername();
+
+        // THE DEATH POPUP: Beautiful and clear feedback
+        if (DuelManager::get()->m_justDied) {
+            DuelManager::get()->m_justDied = false;
+            FLAlertLayer::create("Duel Update", fmt::format("You died at <cy>{}%</c>!", DuelManager::get()->m_lastPercent).c_str(), "OK")->show();
+        }
 
         if (DuelManager::get()->m_inDuel) {
             m_titleLabel->setString("Waiting for Server...");
@@ -119,15 +123,14 @@ public:
     }
 
     void onQueueJoined(CCHttpClient*, CCHttpResponse* res) {
-        if (!res || !res->isSucceed()) {
-            m_titleLabel->setString("Server Offline!");
-            return;
-        }
+        if (!res || !res->isSucceed()) { m_titleLabel->setString("Server Offline!"); return; }
         m_titleLabel->setString("Searching for opponent...");
-        this->schedule(schedule_selector(DuelMatchLayer::pollServer), 0.5f); // Fast polling for snappy turns
+        this->schedule(schedule_selector(DuelMatchLayer::pollServer), 0.5f);
     }
 
     void pollServer(float dt) {
+        if (m_isAnimating) return; // Completely pause polling during UI sequences
+        
         auto req = new CCHttpRequest();
         std::string url = SERVER_URL + "/status?username=" + DuelManager::get()->m_username;
         req->setUrl(url.c_str());
@@ -138,7 +141,7 @@ public:
     }
 
     void onPollResponse(CCHttpClient*, CCHttpResponse* res) {
-        if (!res || !res->isSucceed()) return;
+        if (!res || !res->isSucceed() || m_isAnimating) return;
         
         std::vector<char>* buffer = res->getResponseData();
         std::string resStr(buffer->begin(), buffer->end());
@@ -164,159 +167,156 @@ public:
                         startMatch();
                     }
                 } else {
-                    // Cleaner Spectating Progress
-                    m_titleLabel->setString("SPECTATING OPPONENT...");
+                    m_titleLabel->setString("OPPONENT IS PLAYING");
                     std::string bar = "[";
-                    int barsToDraw = livePercent / 5; // 20 bars total
+                    int barsToDraw = livePercent / 5; 
                     for(int i = 0; i < 20; i++) bar += (i < barsToDraw) ? "|" : " ";
                     bar += "]";
-                    
                     m_spectatorLabel->setString(fmt::format("{}\n\n{}%", bar, livePercent).c_str());
                 }
             } 
             else if (status == "calculating" || status == "game_over") {
-                // THE FIX: Properly check if the C-string is empty
-                const char* currentText = m_resultsLabel->getString();
-                if (!currentText || strlen(currentText) == 0) {
-                    
-                    m_resultsLabel->setString("animating"); // flag to prevent loop
+                if (!m_isAnimating) {
+                    m_isAnimating = true; // Set proper boolean flag
                     m_spectatorLabel->setString("");
                     m_titleLabel->setString("");
-                    this->unscheduleAllSelectors(); // Stop polling during animation
+                    this->unscheduleAllSelectors(); 
                     
-                    int myHp = state[myName]["hp"].asInt().unwrapOr(100);
-                    int oppHp = state[oppName]["hp"].asInt().unwrapOr(100);
-                    int myPct = state[myName]["percent"].asInt().unwrapOr(0);
-                    int oppPct = state[oppName]["percent"].asInt().unwrapOr(0);
-                    int myDmg = state[myName]["lastDamage"].asInt().unwrapOr(0);
-                    int oppDmg = state[oppName]["lastDamage"].asInt().unwrapOr(0);
+                    m_myHp = state[myName]["hp"].asInt().unwrapOr(100);
+                    m_oppHp = state[oppName]["hp"].asInt().unwrapOr(100);
+                    m_myPct = state[myName]["percent"].asInt().unwrapOr(0);
+                    m_oppPct = state[oppName]["percent"].asInt().unwrapOr(0);
+                    m_myDmg = state[myName]["lastDamage"].asInt().unwrapOr(0);
+                    m_oppDmg = state[oppName]["lastDamage"].asInt().unwrapOr(0);
+                    m_isGameOver = (status == "game_over");
 
-                    animateResults(myPct, oppPct, myHp, oppHp, myDmg, oppDmg, status == "game_over");
+                    animatePhase1(); // Start Web-Designer Sequence
                 }
             }
+        } else {
+            m_titleLabel->setString(fmt::format("Players in Queue: {}/2", json["queueCount"].asInt().unwrapOr(1)).c_str());
         }
     }
 
-    void animateResults(int myPct, int oppPct, int myHp, int oppHp, int myDmg, int oppDmg, bool isGameOver) {
+    // --- PHASE 1: PERCENTAGES ---
+    void animatePhase1() {
         auto winSize = CCDirector::sharedDirector()->getWinSize();
 
-        // 1. Create the Left (YOU) and Right (OPPONENT) nodes
         auto myHeader = CCLabelBMFont::create("YOU", "goldFont.fnt");
-        auto myPctLabel = CCLabelBMFont::create(fmt::format("{}%", myPct).c_str(), "bigFont.fnt");
+        auto myPctLabel = CCLabelBMFont::create(fmt::format("{}%", m_myPct).c_str(), "bigFont.fnt");
         myHeader->setPosition({winSize.width * 0.25f, winSize.height * 0.6f});
         myPctLabel->setPosition({winSize.width * 0.25f, winSize.height * 0.45f});
         
         auto oppHeader = CCLabelBMFont::create("OPPONENT", "goldFont.fnt");
-        auto oppPctLabel = CCLabelBMFont::create(fmt::format("{}%", oppPct).c_str(), "bigFont.fnt");
+        auto oppPctLabel = CCLabelBMFont::create(fmt::format("{}%", m_oppPct).c_str(), "bigFont.fnt");
         oppHeader->setPosition({winSize.width * 0.75f, winSize.height * 0.6f});
         oppPctLabel->setPosition({winSize.width * 0.75f, winSize.height * 0.45f});
 
-        // Start invisible
         myHeader->setOpacity(0); myPctLabel->setOpacity(0);
         oppHeader->setOpacity(0); oppPctLabel->setOpacity(0);
-
         this->addChild(myHeader); this->addChild(myPctLabel);
         this->addChild(oppHeader); this->addChild(oppPctLabel);
 
-        // 2. The Fade Sequence (Creating fresh actions for every single node)
         myHeader->runAction(CCSequence::create(CCFadeIn::create(0.5f), CCDelayTime::create(1.5f), CCFadeOut::create(0.5f), nullptr));
-        
         myPctLabel->runAction(CCSequence::create(CCFadeIn::create(0.5f), CCDelayTime::create(1.5f), CCFadeOut::create(0.5f), nullptr));
-        
         oppHeader->runAction(CCSequence::create(CCFadeIn::create(0.5f), CCDelayTime::create(1.5f), CCFadeOut::create(0.5f), nullptr));
         
-        // Final action triggers the health bars
-        auto triggerBars = CCCallFunc::create(this, callfunc_selector(DuelMatchLayer::showHealthBars));
-        oppPctLabel->runAction(CCSequence::create(CCFadeIn::create(0.5f), CCDelayTime::create(1.5f), CCFadeOut::create(0.5f), triggerBars, nullptr));
-
-        // Store these so we can use them in the next function
-        // Note: Using malloc/free or a proper struct is safer long-term, but this array works for our current logic
-        int* data = new int[5]{myHp, oppHp, myDmg, oppDmg, isGameOver};
-        this->setUserData(data);
+        auto nextPhase = CCCallFunc::create(this, callfunc_selector(DuelMatchLayer::animatePhase2));
+        oppPctLabel->runAction(CCSequence::create(CCFadeIn::create(0.5f), CCDelayTime::create(1.5f), CCFadeOut::create(0.5f), nextPhase, nullptr));
     }
 
-    void showHealthBars() {
+    // --- PHASE 2: DAMAGE NUMBERS ---
+    void animatePhase2() {
         auto winSize = CCDirector::sharedDirector()->getWinSize();
-        int* data = static_cast<int*>(this->getUserData());
-        int myHp = data[0]; int oppHp = data[1]; 
-        int myDmg = data[2]; int oppDmg = data[3];
-        bool isGameOver = data[4];
+        
+        std::string myDmgStr = m_myDmg > 0 ? fmt::format("-{}", m_myDmg) : "0";
+        auto myDmgLabel = CCLabelBMFont::create(myDmgStr.c_str(), "bigFont.fnt");
+        myDmgLabel->setPosition({winSize.width * 0.25f, winSize.height * 0.5f});
+        myDmgLabel->setColor(m_myDmg > 0 ? cocos2d::ccColor3B{255, 50, 50} : cocos2d::ccColor3B{150, 150, 150});
+        
+        std::string oppDmgStr = m_oppDmg > 0 ? fmt::format("-{}", m_oppDmg) : "0";
+        auto oppDmgLabel = CCLabelBMFont::create(oppDmgStr.c_str(), "bigFont.fnt");
+        oppDmgLabel->setPosition({winSize.width * 0.75f, winSize.height * 0.5f});
+        oppDmgLabel->setColor(m_oppDmg > 0 ? cocos2d::ccColor3B{255, 50, 50} : cocos2d::ccColor3B{150, 150, 150});
 
-        m_titleLabel->setString(isGameOver ? "MATCH OVER!" : "ROUND RESULTS");
+        myDmgLabel->setOpacity(0); oppDmgLabel->setOpacity(0);
+        this->addChild(myDmgLabel); this->addChild(oppDmgLabel);
 
-        // YOU: Health Bar
+        myDmgLabel->runAction(CCSequence::create(CCFadeIn::create(0.5f), CCDelayTime::create(1.0f), CCFadeOut::create(0.5f), nullptr));
+        auto nextPhase = CCCallFunc::create(this, callfunc_selector(DuelMatchLayer::animatePhase3));
+        oppDmgLabel->runAction(CCSequence::create(CCFadeIn::create(0.5f), CCDelayTime::create(1.0f), CCFadeOut::create(0.5f), nextPhase, nullptr));
+    }
+
+    // --- PHASE 3: HEALTH BARS ---
+    void animatePhase3() {
+        auto winSize = CCDirector::sharedDirector()->getWinSize();
+        m_titleLabel->setString(m_isGameOver ? "MATCH OVER!" : "ROUND RESULTS");
+
+        // YOU
         auto myTitle = CCLabelBMFont::create("YOU", "goldFont.fnt");
         myTitle->setPosition({winSize.width * 0.25f, winSize.height * 0.65f});
         this->addChild(myTitle);
 
         auto myBarBg = CCSprite::create("square02_001.png");
-        myBarBg->setColor({255, 0, 0}); // Red background
-        myBarBg->setOpacity(150);
+        myBarBg->setColor({255, 0, 0}); myBarBg->setOpacity(150);
         myBarBg->setPosition({winSize.width * 0.25f, winSize.height * 0.5f});
         myBarBg->setScaleX(2.0f); myBarBg->setScaleY(0.4f);
         this->addChild(myBarBg);
 
         auto myBarFg = CCSprite::create("square02_001.png");
-        myBarFg->setColor({0, 255, 0}); // Green health
-        myBarFg->setAnchorPoint({0.0f, 0.5f}); // Scale from the left
+        myBarFg->setColor({0, 255, 0}); myBarFg->setAnchorPoint({0.0f, 0.5f}); 
         myBarFg->setPosition({winSize.width * 0.25f - (myBarBg->getScaledContentSize().width / 2), winSize.height * 0.5f});
         myBarFg->setScaleY(0.4f);
         
-        // Start at previous HP, then animate draining to new HP
-        float startMyHp = (myHp + myDmg) / 100.0f * 2.0f;
-        float endMyHp = (myHp) / 100.0f * 2.0f;
+        float startMyHp = (m_myHp + m_myDmg) / 100.0f * 2.0f;
+        float endMyHp = (m_myHp) / 100.0f * 2.0f;
         myBarFg->setScaleX(startMyHp);
         this->addChild(myBarFg);
         myBarFg->runAction(CCScaleTo::create(1.0f, endMyHp, 0.4f));
 
-        // OPPONENT: Health Bar
+        // OPPONENT
         auto oppTitle = CCLabelBMFont::create("OPPONENT", "goldFont.fnt");
         oppTitle->setPosition({winSize.width * 0.75f, winSize.height * 0.65f});
         this->addChild(oppTitle);
 
         auto oppBarBg = CCSprite::create("square02_001.png");
-        oppBarBg->setColor({255, 0, 0});
-        oppBarBg->setOpacity(150);
+        oppBarBg->setColor({255, 0, 0}); oppBarBg->setOpacity(150);
         oppBarBg->setPosition({winSize.width * 0.75f, winSize.height * 0.5f});
         oppBarBg->setScaleX(2.0f); oppBarBg->setScaleY(0.4f);
         this->addChild(oppBarBg);
 
         auto oppBarFg = CCSprite::create("square02_001.png");
-        oppBarFg->setColor({0, 255, 0});
-        oppBarFg->setAnchorPoint({0.0f, 0.5f});
+        oppBarFg->setColor({0, 255, 0}); oppBarFg->setAnchorPoint({0.0f, 0.5f});
         oppBarFg->setPosition({winSize.width * 0.75f - (oppBarBg->getScaledContentSize().width / 2), winSize.height * 0.5f});
         oppBarFg->setScaleY(0.4f);
         
-        float startOppHp = (oppHp + oppDmg) / 100.0f * 2.0f;
-        float endOppHp = (oppHp) / 100.0f * 2.0f;
+        float startOppHp = (m_oppHp + m_oppDmg) / 100.0f * 2.0f;
+        float endOppHp = (m_oppHp) / 100.0f * 2.0f;
         oppBarFg->setScaleX(startOppHp);
         this->addChild(oppBarFg);
         oppBarFg->runAction(CCScaleTo::create(1.0f, endOppHp, 0.4f));
 
-        // Show Ready button after animation finishes
         this->scheduleOnce(schedule_selector(DuelMatchLayer::showReadyButton), 1.5f);
     }
 
     void showReadyButton(float dt) {
         m_readyBtn->setVisible(true);
-        // Resume polling to check if the other player readied up
+        m_isAnimating = false; // Animation fully complete
         this->schedule(schedule_selector(DuelMatchLayer::pollServer), 1.0f);
     }
 
     void startMatch() {
         DuelManager::get()->m_inDuel = true;
         DuelManager::get()->m_isDead = false;
-        auto GLM = GameLevelManager::sharedState();
-        auto level = GLM->getMainLevel(22, false);
+        auto level = GameLevelManager::sharedState()->getMainLevel(22, false);
         if (level) {
-            auto scene = PlayLayer::scene(level, false, false);
-            CCDirector::sharedDirector()->replaceScene(CCTransitionFade::create(0.5f, scene));
+            CCDirector::sharedDirector()->replaceScene(CCTransitionFade::create(0.5f, PlayLayer::scene(level, false, false)));
         }
     }
 
     void onReadyClick(CCObject*) {
         m_readyBtn->setVisible(false);
-        m_resultsLabel->setString("Waiting for opponent...");
+        m_titleLabel->setString("Waiting for opponent...");
         auto req = new CCHttpRequest();
         req->setUrl((SERVER_URL + "/ready").c_str());
         req->setRequestType(CCHttpRequest::HttpRequestType::kHttpPost);
@@ -327,7 +327,6 @@ public:
     }
 
     void onExitClick(CCObject*) {
-        // Exit logic remains identical
         this->unscheduleAllSelectors();
         DuelManager::get()->m_inDuel = false;
         auto req = new CCHttpRequest();
@@ -341,13 +340,9 @@ public:
     }
 };
 
-// --- PLAY LAYER HOOK ---
 class $modify(MyPlayLayer, PlayLayer) {
-    
     bool init(GJGameLevel* level, bool useReplay, bool dontCreateObjects) {
         if (!PlayLayer::init(level, useReplay, dontCreateObjects)) return false;
-        
-        // If in a duel, schedule a live percentage sync every 0.5 seconds
         if (DuelManager::get()->m_inDuel) {
             this->schedule(schedule_selector(MyPlayLayer::syncLiveProgress), 0.5f);
         }
@@ -356,7 +351,6 @@ class $modify(MyPlayLayer, PlayLayer) {
 
     void syncLiveProgress(float dt) {
         if (!DuelManager::get()->m_inDuel || DuelManager::get()->m_isDead) return;
-        
         auto req = new CCHttpRequest();
         req->setUrl((SERVER_URL + "/sync").c_str());
         req->setRequestType(CCHttpRequest::HttpRequestType::kHttpPost);
@@ -371,12 +365,12 @@ class $modify(MyPlayLayer, PlayLayer) {
 
         if (DuelManager::get()->m_inDuel && !DuelManager::get()->m_isDead) {
             int percent = this->getCurrentPercentInt();
-            
-            // THE 0% BUG FIX: Ignore deaths at 0%. Let them respawn naturally.
             if (percent == 0) return; 
 
             DuelManager::get()->m_isDead = true;
-            this->unschedule(schedule_selector(MyPlayLayer::syncLiveProgress)); // Stop syncing
+            DuelManager::get()->m_lastPercent = percent;
+            DuelManager::get()->m_justDied = true; // Flags the popup for the menu
+            this->unschedule(schedule_selector(MyPlayLayer::syncLiveProgress)); 
             
             auto req = new CCHttpRequest();
             req->setUrl((SERVER_URL + "/die").c_str());
@@ -385,24 +379,32 @@ class $modify(MyPlayLayer, PlayLayer) {
             req->setRequestData(body.c_str(), body.length());
             CCHttpClient::getInstance()->send(req);
             req->release();
-
-            this->scheduleOnce(schedule_selector(MyPlayLayer::kickToVersus), 1.5f);
+            // We intentionally do NOT schedule a manual kick here anymore. 
+            // The resetLevel hook handles it cleanly.
         }
     }
 
-    void pauseGame(bool p0) {
-        if (DuelManager::get()->m_inDuel) return; // Anti-cheese
-        PlayLayer::pauseGame(p0);
+    // THE KICK DELAY BUG FIX: Intercept the level reset and warp to the menu instead!
+    void resetLevel() {
+        if (DuelManager::get()->m_inDuel && DuelManager::get()->m_isDead) {
+            CCDirector::sharedDirector()->replaceScene(DuelMatchLayer::scene());
+            return;
+        }
+        PlayLayer::resetLevel();
     }
 
-    void kickToVersus(float dt) {
-        CCDirector::sharedDirector()->replaceScene(CCTransitionFade::create(0.5f, DuelMatchLayer::scene()));
+    void pauseGame(bool p0) {
+        if (DuelManager::get()->m_inDuel) return; 
+        PlayLayer::pauseGame(p0);
     }
     
     void levelComplete() {
         PlayLayer::levelComplete();
         if (DuelManager::get()->m_inDuel && !DuelManager::get()->m_isDead) {
             DuelManager::get()->m_isDead = true;
+            DuelManager::get()->m_lastPercent = 100;
+            DuelManager::get()->m_justDied = true;
+            
             auto req = new CCHttpRequest();
             req->setUrl((SERVER_URL + "/die").c_str());
             req->setRequestType(CCHttpRequest::HttpRequestType::kHttpPost);
@@ -410,7 +412,7 @@ class $modify(MyPlayLayer, PlayLayer) {
             req->setRequestData(body.c_str(), body.length());
             CCHttpClient::getInstance()->send(req);
             req->release();
-            this->scheduleOnce(schedule_selector(MyPlayLayer::kickToVersus), 2.0f);
+            // Just let the normal transition handle it, or exit manually
         }
     }
 };
@@ -419,9 +421,7 @@ class $modify(MyMenuLayer, MenuLayer) {
     bool init() {
         if (!MenuLayer::init()) return false;
         auto menu = this->getChildByID("bottom-menu");
-        auto btn = CCMenuItemSpriteExtra::create(
-            ButtonSprite::create("Duel Matchmaking"), this, menu_selector(MyMenuLayer::onStartDuel)
-        );
+        auto btn = CCMenuItemSpriteExtra::create(ButtonSprite::create("Duel Matchmaking"), this, menu_selector(MyMenuLayer::onStartDuel));
         menu->addChild(btn);
         menu->updateLayout();
         return true;
