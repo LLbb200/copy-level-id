@@ -6,7 +6,7 @@
 
 using namespace geode::prelude;
 
-const std::string SERVER_URL = "https://YOUR-REPLIT-URL-HERE"; 
+const std::string SERVER_URL = "https://713df0ba-0570-43f8-b018-fb75bbd4baa7-00-1v5ww1splvikp.pike.replit.dev:8080"; 
 
 class DuelManager {
 public:
